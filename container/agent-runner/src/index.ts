@@ -455,6 +455,7 @@ async function runQuery(
         'mcp__nanoclaw__*'
       ],
       env: sdkEnv,
+      maxTurns: sdkEnv.MAX_TURNS ? parseInt(sdkEnv.MAX_TURNS, 10) : undefined,
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
       settingSources: ['project', 'user'],
