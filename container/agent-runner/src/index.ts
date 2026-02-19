@@ -18,6 +18,7 @@ import fs from 'fs';
 import path from 'path';
 import { query, HookCallback, PreCompactHookInput, PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
+import { buildGuardConfig, createGuardHook } from './guard.js';
 
 interface ContainerInput {
   prompt: string;
@@ -187,7 +188,13 @@ function createPreCompactHook(): HookCallback {
 // Secrets to strip from Bash tool subprocess environments.
 // These are needed by claude-code for API auth but should never
 // be visible to commands Kit runs.
-const SECRET_ENV_VARS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'];
+const SECRET_ENV_VARS = [
+  'ANTHROPIC_API_KEY',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'GUARD_API_TOKEN',
+  'GUARD_POLICY_ID',
+  'FEEDBACK_TOKEN',
+];
 
 function createSanitizeBashHook(): HookCallback {
   return async (input, _toolUseId, _context) => {
@@ -206,6 +213,20 @@ function createSanitizeBashHook(): HookCallback {
       },
     };
   };
+}
+
+function buildPreToolUseHooks(sdkEnv: Record<string, string | undefined>) {
+  const hooks = [{ matcher: 'Bash', hooks: [createSanitizeBashHook()] }];
+
+  const guardConfig = buildGuardConfig(sdkEnv);
+  if (guardConfig.enabled) {
+    hooks.push({ matcher: 'Bash', hooks: [createGuardHook(guardConfig)] });
+    log(`Guard hook enabled (apiToken=${guardConfig.apiToken ? 'set' : 'unset'}, policyId=${guardConfig.policyId ? 'set' : 'unset'})`);
+  } else {
+    log('Guard hook disabled (GUARD_ENABLED=false)');
+  }
+
+  return hooks;
 }
 
 function sanitizeFilename(summary: string): string {
@@ -450,7 +471,7 @@ async function runQuery(
       },
       hooks: {
         PreCompact: [{ hooks: [createPreCompactHook()] }],
-        PreToolUse: [{ matcher: 'Bash', hooks: [createSanitizeBashHook()] }],
+        PreToolUse: buildPreToolUseHooks(sdkEnv),
       },
     }
   })) {
