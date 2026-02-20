@@ -55,7 +55,53 @@ Then run `/setup`. Claude Code handles everything: dependencies, authentication,
 - **Web access** - Search and fetch content
 - **Container isolation** - Agents sandboxed in Apple Container (macOS) or Docker (macOS/Linux)
 - **Agent Swarms** - Spin up teams of specialized agents that collaborate on complex tasks (first personal AI assistant to support this)
+- **AgentSuite Guard** - Pre-tool-use security hook that blocks dangerous commands via regex patterns and policy-based AI evaluation
 - **Optional integrations** - Add Gmail (`/add-gmail`) and more via skills
+
+## AgentSuite Guard
+
+A `PreToolUse` hook integrated into the agent-runner that inspects every Bash command before execution. Two-tier protection:
+
+1. **Critical regex patterns** — Instant blocking for catastrophic commands (`rm -rf /`, fork bombs, `mkfs`, `dd` to raw disk)
+2. **VirtueAgent Guard API** — Optional policy-based evaluation for suspicious commands (data destruction, privilege escalation, network risks)
+
+### Configuration
+
+Add these to your `.env`:
+
+```bash
+# Required for Guard API (without these, only critical regex patterns are checked)
+GUARD_API_TOKEN=your-jwt-token
+GUARD_POLICY_ID=agp_your_policy_id
+
+# Optional
+GUARD_API_URL=https://virtueagent-action-guard.ngrok.io  # default
+GUARD_ENABLED=true          # default
+GUARD_DEBUG=false            # enable verbose logging
+GUARD_FAST_MODE=false        # lower-latency Guard API mode
+FEEDBACK_API_TOKEN=your-token  # enable feedback reporting
+FEEDBACK_API_URL=https://virtueagent-action-guard.ngrok.io  # default
+```
+
+### Testing
+
+```bash
+# Hook-level tests (no API key needed, runs inside container)
+bash e2e/test-guard.sh hook
+
+# Live agent tests (requires ANTHROPIC_API_KEY)
+bash e2e/test-guard.sh agent
+
+# All tests
+bash e2e/test-guard.sh
+```
+
+### Guard Files
+
+- `container/agent-runner/src/guard.ts` — Hook implementation, regex patterns, Guard API client
+- `container/agent-runner/src/guard.test.ts` — 32 unit tests
+- `container/agent-runner/src/guard.e2e-test.ts` — Hook-level integration tests
+- `e2e/test-guard.sh` — E2E test runner (hook + live agent suites)
 
 ## Usage
 
