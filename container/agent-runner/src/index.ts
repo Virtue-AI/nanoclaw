@@ -19,6 +19,7 @@ import path from 'path';
 import { query, HookCallback, PreCompactHookInput, PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
 import { buildGuardConfig, createGuardHook, createMcpGuardHook } from './guard.js';
+import { buildTopicGuardConfig, scanSkillsAtSessionStart } from './skill-scanner.js';
 
 interface ContainerInput {
   prompt: string;
@@ -642,10 +643,14 @@ async function main(): Promise<void> {
   let sessionId = containerInput.sessionId;
   fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
 
-  // Clean up stale _close sentinel from previous container runs
   try { fs.unlinkSync(IPC_INPUT_CLOSE_SENTINEL); } catch { /* ignore */ }
 
-  // Build initial prompt (drain any pending IPC messages too)
+  const topicGuardConfig = buildTopicGuardConfig(sdkEnv);
+  const scanReport = await scanSkillsAtSessionStart(topicGuardConfig);
+  if (scanReport.blockedCount > 0) {
+    log(`Blocked ${scanReport.blockedCount} skill(s): ${scanReport.results.filter(r => r.flagged).map(r => r.name).join(', ')}`);
+  }
+
   let prompt = containerInput.prompt;
   if (containerInput.isScheduledTask) {
     prompt = `[SCHEDULED TASK - The following message was sent automatically and is not coming directly from the user or group.]\n\n${prompt}`;

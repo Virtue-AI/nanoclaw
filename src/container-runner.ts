@@ -200,6 +200,10 @@ function readSecrets(): Record<string, string> {
     'FEEDBACK_TOKEN',
     'MCP_GATEWAY_URL',
     'MCP_GATEWAY_ACCESS_TOKEN',
+    'TOPIC_GUARD_API_KEY',
+    'TOPIC_GUARD_UUID',
+    'TOPIC_GUARD_API_URL',
+    'TOPIC_GUARD_ENABLED',
   ]);
 }
 
