@@ -198,6 +198,8 @@ function readSecrets(): Record<string, string> {
     'GUARD_DEBUG',
     'FEEDBACK_URL',
     'FEEDBACK_TOKEN',
+    'MCP_GATEWAY_URL',
+    'MCP_GATEWAY_ACCESS_TOKEN',
   ]);
 }
 

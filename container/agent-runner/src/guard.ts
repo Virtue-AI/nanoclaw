@@ -1,10 +1,15 @@
 /**
- * NanoClaw Guard — Programmatic PreToolUse hook for Bash commands.
+ * NanoClaw Guard — Programmatic PreToolUse hook.
  *
- * Three-tier evaluation:
+ * Bash commands — Three-tier evaluation:
  *   1. Critical regex → instant block
  *   2. Suspicious + Guard API token → synchronous API check
  *   3. Non-suspicious + Guard API token → async fire-and-forget
+ *
+ * MCP tool calls — Policy-based evaluation:
+ *   Outbound MCP actions (post, send, create) are sent to the Guard API
+ *   for policy evaluation. The API decides if the action is allowed based
+ *   on the configured security policy.
  *
  * Without GUARD_API_TOKEN / GUARD_POLICY_ID, only critical regex is enforced.
  */
@@ -89,7 +94,7 @@ interface GuardApiResponse {
   violations?: string[];
 }
 
-function buildSessionHistory(command: string) {
+function buildSessionHistory(action: string, toolName: string, toolParams: Record<string, unknown>) {
   return {
     session_info: {
       metadata: { actions_count: 1, step_count: 1, tool_count: 1 },
@@ -97,10 +102,10 @@ function buildSessionHistory(command: string) {
     trajectory: [
       {
         role: 'agent',
-        action: `exec(command=${JSON.stringify(command)})`,
+        action,
         metadata: {
-          tool_name: 'exec',
-          tool_params: { command },
+          tool_name: toolName,
+          tool_params: toolParams,
           server_name: 'nanoclaw-guard',
           server_id: 'nanoclaw-guard',
         },
@@ -111,10 +116,12 @@ function buildSessionHistory(command: string) {
 }
 
 async function analyzeWithGuardApi(
-  command: string,
+  action: string,
+  toolName: string,
+  toolParams: Record<string, unknown>,
   config: GuardConfig,
 ): Promise<GuardApiResponse> {
-  const history = buildSessionHistory(command);
+  const history = buildSessionHistory(action, toolName, toolParams);
   const res = await fetch(`${config.apiUrl}/api/v1/guard_actions`, {
     method: 'POST',
     headers: {
@@ -148,11 +155,11 @@ function reportFeedback(config: GuardConfig, entry: Record<string, unknown>): vo
   }).catch(() => {});
 }
 
-function blockResponse(command: string, reason: string, detail?: string): SyncHookJSONOutput {
+function blockResponse(action: string, reason: string, detail?: string): SyncHookJSONOutput {
   const lines = [
-    '**NanoClaw Guard: Command Blocked**',
+    '**AgentSuite Guard: Action Blocked**',
     '',
-    `> \`${command}\``,
+    `> \`${action.length > 300 ? action.slice(0, 300) + '...' : action}\``,
     '',
     `**Reason:** ${reason}`,
   ];
@@ -204,7 +211,7 @@ export function createGuardHook(config: GuardConfig): HookCallback {
     const suspicious = matchSuspicious(command);
     if (!suspicious) {
       log('Not suspicious — async (non-blocking)');
-      analyzeWithGuardApi(command, config)
+      analyzeWithGuardApi(`exec(command=${JSON.stringify(command)})`, 'exec', { command }, config)
         .then((data) => {
           log(`Async result: allowed=${data.allowed}`);
           reportFeedback(config, {
@@ -226,7 +233,7 @@ export function createGuardHook(config: GuardConfig): HookCallback {
 
     log(`Suspicious: ${suspicious.description} — calling Guard API`);
     try {
-      const data = await analyzeWithGuardApi(command, config);
+      const data = await analyzeWithGuardApi(`exec(command=${JSON.stringify(command)})`, 'exec', { command }, config);
       log(`Guard API: allowed=${data.allowed}, category=${data.threat_category}`);
 
       reportFeedback(config, {
@@ -248,6 +255,91 @@ export function createGuardHook(config: GuardConfig): HookCallback {
           ? `Violations:\n• ${data.violations.slice(0, 2).join('\n• ')}`
           : undefined;
         return blockResponse(command, data.explanation || 'Blocked by Guard API', violationsSummary);
+      }
+
+      log('Allowed by Guard API');
+      return {};
+    } catch (err) {
+      log(`Guard API error: ${(err as Error).message} — allowing`);
+      return {};
+    }
+  };
+}
+
+// ---------------------------------------------------------------------------
+// MCP tool guard — policy-based evaluation for outbound MCP actions
+// ---------------------------------------------------------------------------
+
+const MCP_OUTBOUND_PATTERNS = [
+  /post_message/i,
+  /send_message/i,
+  /send_email/i,
+  /post_message_dm/i,
+];
+
+function isMcpOutbound(toolName: string): boolean {
+  return toolName.startsWith('mcp__') && MCP_OUTBOUND_PATTERNS.some(p => p.test(toolName));
+}
+
+const MCP_GATEWAY_INTERNAL_KEYS = ['session_id', 'user_queries', 'consent'];
+
+function formatMcpAction(toolName: string, toolInput: Record<string, unknown>): string {
+  const shortName = toolName.replace(/^mcp__\w+__/, '');
+  const params = Object.entries(toolInput)
+    .filter(([key]) => !MCP_GATEWAY_INTERNAL_KEYS.includes(key))
+    .map(([key, value]) => {
+      const str = typeof value === 'string' ? value : JSON.stringify(value);
+      const truncated = str.length > 500 ? str.slice(0, 500) + '...' : str;
+      return `${key}=${JSON.stringify(truncated)}`;
+    })
+    .join(', ');
+  return `${shortName}(${params})`;
+}
+
+export function createMcpGuardHook(config: GuardConfig): HookCallback {
+  const log = (msg: string) => {
+    if (config.debug) console.error(`[guard:mcp] ${msg}`);
+  };
+
+  return async (input: HookInput, _toolUseId: string | undefined, _options: { signal: AbortSignal }): Promise<SyncHookJSONOutput> => {
+    const preInput = input as PreToolUseHookInput;
+    const toolName = (preInput as unknown as { tool_name?: string }).tool_name;
+    const toolInput = preInput.tool_input as Record<string, unknown> | undefined;
+
+    if (!toolName || !isMcpOutbound(toolName)) return {};
+
+    if (!config.apiToken || !config.policyId) {
+      log(`Skipping MCP guard (no API token): ${toolName}`);
+      return {};
+    }
+
+    const action = formatMcpAction(toolName, toolInput ?? {});
+    log(`Evaluating MCP action: ${action}`);
+
+    try {
+      const data = await analyzeWithGuardApi(action, toolName, toolInput ?? {}, config);
+      log(`Guard API: allowed=${data.allowed}, category=${data.threat_category}`);
+
+      reportFeedback(config, {
+        tool: toolName,
+        action,
+        source: 'guard-api-mcp',
+        blocked: !data.allowed,
+        analysis: {
+          allowed: data.allowed,
+          threatCategory: data.threat_category,
+          reason: data.explanation,
+          violations: data.violations,
+        },
+        timestamp: new Date().toISOString(),
+      });
+
+      if (!data.allowed) {
+        log(`BLOCKED MCP action: ${data.threat_category}`);
+        const violationsSummary = data.violations?.length
+          ? `Violations:\n• ${data.violations.slice(0, 2).join('\n• ')}`
+          : undefined;
+        return blockResponse(action, data.explanation || 'Blocked by Guard API', violationsSummary);
       }
 
       log('Allowed by Guard API');

@@ -18,7 +18,7 @@ import fs from 'fs';
 import path from 'path';
 import { query, HookCallback, PreCompactHookInput, PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
-import { buildGuardConfig, createGuardHook } from './guard.js';
+import { buildGuardConfig, createGuardHook, createMcpGuardHook } from './guard.js';
 
 interface ContainerInput {
   prompt: string;
@@ -216,12 +216,15 @@ function createSanitizeBashHook(): HookCallback {
 }
 
 function buildPreToolUseHooks(sdkEnv: Record<string, string | undefined>) {
-  const hooks = [{ matcher: 'Bash', hooks: [createSanitizeBashHook()] }];
+  const hooks: { matcher?: string; hooks: any[] }[] = [
+    { matcher: 'Bash', hooks: [createSanitizeBashHook()] },
+  ];
 
   const guardConfig = buildGuardConfig(sdkEnv);
   if (guardConfig.enabled) {
     hooks.push({ matcher: 'Bash', hooks: [createGuardHook(guardConfig)] });
-    log(`Guard hook enabled (apiToken=${guardConfig.apiToken ? 'set' : 'unset'}, policyId=${guardConfig.policyId ? 'set' : 'unset'})`);
+    hooks.push({ hooks: [createMcpGuardHook(guardConfig)] });
+    log(`Guard hook enabled (bash+mcp, apiToken=${guardConfig.apiToken ? 'set' : 'unset'}, policyId=${guardConfig.policyId ? 'set' : 'unset'})`);
   } else {
     log('Guard hook disabled (GUARD_ENABLED=false)');
   }
@@ -368,6 +371,39 @@ function waitForIpcMessage(): Promise<string | null> {
   });
 }
 
+function buildMcpServers(
+  mcpServerPath: string,
+  containerInput: ContainerInput,
+  sdkEnv: Record<string, string | undefined>,
+) {
+  const servers: Record<string, any> = {
+    nanoclaw: {
+      command: 'node',
+      args: [mcpServerPath],
+      env: {
+        NANOCLAW_CHAT_JID: containerInput.chatJid,
+        NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
+        NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+      },
+    },
+  };
+
+  if (sdkEnv.MCP_GATEWAY_URL) {
+    const headers: Record<string, string> = {};
+    if (sdkEnv.MCP_GATEWAY_ACCESS_TOKEN) {
+      headers['Authorization'] = `Bearer ${sdkEnv.MCP_GATEWAY_ACCESS_TOKEN}`;
+    }
+    servers['virtueai'] = {
+      type: 'http',
+      url: sdkEnv.MCP_GATEWAY_URL,
+      headers,
+    };
+    log(`MCP gateway configured: ${sdkEnv.MCP_GATEWAY_URL}`);
+  }
+
+  return servers;
+}
+
 /**
  * Run a single query and stream results via writeOutput.
  * Uses MessageStream (AsyncIterable) to keep isSingleUserTurn=false,
@@ -452,24 +488,15 @@ async function runQuery(
         'TeamCreate', 'TeamDelete', 'SendMessage',
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
-        'mcp__nanoclaw__*'
+        'mcp__nanoclaw__*',
+        ...(sdkEnv.MCP_GATEWAY_URL ? ['mcp__virtueai__*'] : []),
       ],
       env: sdkEnv,
       maxTurns: sdkEnv.MAX_TURNS ? parseInt(sdkEnv.MAX_TURNS, 10) : undefined,
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
       settingSources: ['project', 'user'],
-      mcpServers: {
-        nanoclaw: {
-          command: 'node',
-          args: [mcpServerPath],
-          env: {
-            NANOCLAW_CHAT_JID: containerInput.chatJid,
-            NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
-            NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
-          },
-        },
-      },
+      mcpServers: buildMcpServers(mcpServerPath, containerInput, sdkEnv),
       hooks: {
         PreCompact: [{ hooks: [createPreCompactHook()] }],
         PreToolUse: buildPreToolUseHooks(sdkEnv),
