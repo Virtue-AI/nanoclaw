@@ -584,6 +584,9 @@ async function runQuery(
     if (message.type === 'system' && message.subtype === 'init') {
       newSessionId = message.session_id;
       log(`Session initialized: ${newSessionId}`);
+      if (newSessionId) {
+        writeContextJsonl(newSessionId, globalClaudeMd, allowedTools);
+      }
     }
 
     if (message.type === 'system' && (message as { subtype?: string }).subtype === 'task_notification') {
@@ -605,11 +608,6 @@ async function runQuery(
 
   ipcPolling = false;
   log(`Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`);
-
-  if (newSessionId) {
-    writeContextJsonl(newSessionId, globalClaudeMd, allowedTools);
-  }
-
   return { newSessionId, lastAssistantUuid, closedDuringQuery };
 }
 
