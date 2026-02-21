@@ -79,7 +79,7 @@ launchctl unload ~/Library/LaunchAgents/com.nanoclaw.plist
    Wait for `NanoClaw running (trigger: @Andy)` in logs.
 
 3. **Send WhatsApp message** to main channel (no `@Andy` prefix needed for main)
-   - Demo 1 prompt: Carol 需要员工名册数据，帮她从 HRMS 查出来通过 Slack 发给她
+   - Demo 1 prompt: Carol needs the employee roster data. Pull it from HRMS and send it to her via Slack.
 
 4. **Monitor agent execution**
    ```bash
