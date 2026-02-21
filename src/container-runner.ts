@@ -203,6 +203,82 @@ function readSecrets(): Record<string, string> {
   ]);
 }
 
+interface TrajectoryStep {
+  role: 'user' | 'assistant' | 'system';
+  type: 'text' | 'tool_call' | 'tool_result' | 'guard';
+  content?: string;
+  tool?: string;
+  input?: Record<string, unknown>;
+  result?: string;
+  blocked?: boolean;
+  timestamp?: string;
+}
+
+function exportTrajectory(groupFolder: string, sessionId: string | undefined, logsDir: string): void {
+  if (!sessionId) return;
+  const sessionDir = path.join(DATA_DIR, 'sessions', groupFolder, '.claude', 'projects', '-workspace-group');
+  const jsonlPath = path.join(sessionDir, `${sessionId}.jsonl`);
+  if (!fs.existsSync(jsonlPath)) {
+    logger.debug({ jsonlPath }, 'No session JSONL found for trajectory export');
+    return;
+  }
+
+  try {
+    const lines = fs.readFileSync(jsonlPath, 'utf-8').trim().split('\n');
+    const steps: TrajectoryStep[] = [];
+
+    for (const line of lines) {
+      const obj = JSON.parse(line);
+      const msg = obj.message;
+      if (!msg?.content) continue;
+
+      const contents = Array.isArray(msg.content) ? msg.content : [{ type: 'text', text: msg.content }];
+      for (const c of contents) {
+        if (c.type === 'text' && c.text) {
+          steps.push({ role: msg.role, type: 'text', content: c.text, timestamp: obj.timestamp });
+        } else if (c.type === 'tool_use') {
+          const input = { ...c.input };
+          delete input.session_id;
+          delete input.user_queries;
+          steps.push({ role: 'assistant', type: 'tool_call', tool: c.name, input, timestamp: obj.timestamp });
+        } else if (c.type === 'tool_result') {
+          let text = typeof c.content === 'string' ? c.content : '';
+          if (Array.isArray(c.content)) {
+            text = c.content.map((x: { text?: string }) => x.text || '').join('');
+          }
+          // Strip gateway injection boilerplate
+          const marker = 'Tool Call Result:\n';
+          const idx = text.indexOf(marker);
+          if (idx !== -1) text = text.slice(idx + marker.length);
+          steps.push({ role: 'user', type: 'tool_result', tool: c.tool_use_id, result: text, timestamp: obj.timestamp });
+        }
+      }
+    }
+
+    // Inject guard events from container stderr (already in logs dir)
+    const guardLogPath = path.join(logsDir, '..', '..', 'data', 'sessions', groupFolder, '.claude', 'debug', `${sessionId}.txt`);
+    if (fs.existsSync(guardLogPath)) {
+      const debugLines = fs.readFileSync(guardLogPath, 'utf-8').split('\n');
+      for (const dl of debugLines) {
+        if (dl.includes('executePreToolHooks called for tool:')) {
+          const toolMatch = dl.match(/tool: (.+)/);
+          if (toolMatch) {
+            const ts = dl.match(/^(\S+)/)?.[1];
+            steps.push({ role: 'system', type: 'guard', tool: toolMatch[1], timestamp: ts });
+          }
+        }
+      }
+    }
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const outPath = path.join(logsDir, `trajectory-${timestamp}.json`);
+    fs.writeFileSync(outPath, JSON.stringify({ sessionId, steps, exportedAt: new Date().toISOString() }, null, 2));
+    logger.info({ outPath, stepCount: steps.length }, 'Trajectory exported');
+  } catch (err) {
+    logger.warn({ err, sessionId }, 'Failed to export trajectory');
+  }
+}
+
 function buildContainerArgs(mounts: VolumeMount[], containerName: string): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
@@ -499,6 +575,8 @@ export async function runContainerAgent(
 
       fs.writeFileSync(logFile, logLines.join('\n'));
       logger.debug({ logFile, verbose: isVerbose }, 'Container log written');
+
+      exportTrajectory(input.groupFolder, newSessionId || input.sessionId, logsDir);
 
       if (code !== 0) {
         logger.error(

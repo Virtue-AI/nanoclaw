@@ -20,7 +20,7 @@ import { cleanupOrphans, ensureContainerRuntimeRunning } from './container-runti
 import {
   getAllChats,
   getAllRegisteredGroups,
-  getAllSessions,
+  clearAllSessions,
   getAllTasks,
   getMessagesSince,
   getNewMessages,
@@ -61,7 +61,8 @@ function loadState(): void {
     logger.warn('Corrupted last_agent_timestamp in DB, resetting');
     lastAgentTimestamp = {};
   }
-  sessions = getAllSessions();
+  clearAllSessions();
+  sessions = {};
   registeredGroups = getAllRegisteredGroups();
   logger.info(
     { groupCount: Object.keys(registeredGroups).length },

@@ -274,11 +274,20 @@ const MCP_OUTBOUND_PATTERNS = [
   /post_message/i,
   /send_message/i,
   /send_email/i,
+];
+
+// DMs are user-initiated targeted communication — skip guard evaluation.
+// Only broadcast/channel actions are potential exfiltration vectors.
+const MCP_DM_PATTERNS = [
   /post_message_dm/i,
+  /send_message_dm/i,
+  /send_direct_message/i,
 ];
 
 function isMcpOutbound(toolName: string): boolean {
-  return toolName.startsWith('mcp__') && MCP_OUTBOUND_PATTERNS.some(p => p.test(toolName));
+  if (!toolName.startsWith('mcp__')) return false;
+  if (MCP_DM_PATTERNS.some(p => p.test(toolName))) return false;
+  return MCP_OUTBOUND_PATTERNS.some(p => p.test(toolName));
 }
 
 const MCP_GATEWAY_INTERNAL_KEYS = ['session_id', 'user_queries', 'consent'];
