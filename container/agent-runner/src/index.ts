@@ -58,6 +58,73 @@ interface SDKUserMessage {
 const IPC_INPUT_DIR = '/workspace/ipc/input';
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_POLL_MS = 500;
+const CONTEXT_JSONL_DIR = '/home/node/.claude/projects/-workspace-group';
+
+function writeContextJsonl(
+  sessionId: string,
+  globalClaudeMd: string | undefined,
+  allowedTools: string[],
+): void {
+  try {
+    const contextPath = path.join(CONTEXT_JSONL_DIR, `${sessionId}.context.jsonl`);
+    const lines: string[] = [];
+    const ts = new Date().toISOString();
+
+    const projectClaudeMdPath = '/workspace/group/CLAUDE.md';
+    if (fs.existsSync(projectClaudeMdPath)) {
+      lines.push(JSON.stringify({
+        type: 'context',
+        subtype: 'claude_md',
+        source: 'project',
+        path: projectClaudeMdPath,
+        content: fs.readFileSync(projectClaudeMdPath, 'utf-8'),
+        timestamp: ts,
+      }));
+    }
+
+    if (globalClaudeMd) {
+      lines.push(JSON.stringify({
+        type: 'context',
+        subtype: 'claude_md',
+        source: 'global',
+        path: '/workspace/global/CLAUDE.md',
+        content: globalClaudeMd,
+        timestamp: ts,
+      }));
+    }
+
+    const skillsDir = '/home/node/.claude/skills';
+    if (fs.existsSync(skillsDir)) {
+      for (const entry of fs.readdirSync(skillsDir)) {
+        const entryPath = path.join(skillsDir, entry);
+        if (!fs.statSync(entryPath).isDirectory()) continue;
+        const skillMdPath = path.join(entryPath, 'SKILL.md');
+        if (fs.existsSync(skillMdPath)) {
+          lines.push(JSON.stringify({
+            type: 'context',
+            subtype: 'skill',
+            name: entry,
+            path: skillMdPath,
+            content: fs.readFileSync(skillMdPath, 'utf-8'),
+            timestamp: ts,
+          }));
+        }
+      }
+    }
+
+    lines.push(JSON.stringify({
+      type: 'context',
+      subtype: 'tools',
+      allowedTools,
+      timestamp: ts,
+    }));
+
+    fs.writeFileSync(contextPath, lines.join('\n') + '\n');
+    log(`Context JSONL written: ${contextPath} (${lines.length} entries)`);
+  } catch (err) {
+    log(`Failed to write context JSONL: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
 
 /**
  * Push-based async iterable for streaming user messages to the SDK.
@@ -470,6 +537,18 @@ async function runQuery(
     log(`Additional directories: ${extraDirs.join(', ')}`);
   }
 
+  const allowedTools = [
+    'Bash',
+    'Read', 'Write', 'Edit', 'Glob', 'Grep',
+    'WebSearch', 'WebFetch',
+    'Task', 'TaskOutput', 'TaskStop',
+    'TeamCreate', 'TeamDelete', 'SendMessage',
+    'TodoWrite', 'ToolSearch', 'Skill',
+    'NotebookEdit',
+    'mcp__nanoclaw__*',
+    ...(sdkEnv.MCP_GATEWAY_URL ? ['mcp__virtueai__*'] : []),
+  ];
+
   for await (const message of query({
     prompt: stream,
     options: {
@@ -477,20 +556,11 @@ async function runQuery(
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,
       resumeSessionAt: resumeAt,
+      debugFile: '/workspace/group/sdk-debug.log',
       systemPrompt: globalClaudeMd
         ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
         : undefined,
-      allowedTools: [
-        'Bash',
-        'Read', 'Write', 'Edit', 'Glob', 'Grep',
-        'WebSearch', 'WebFetch',
-        'Task', 'TaskOutput', 'TaskStop',
-        'TeamCreate', 'TeamDelete', 'SendMessage',
-        'TodoWrite', 'ToolSearch', 'Skill',
-        'NotebookEdit',
-        'mcp__nanoclaw__*',
-        ...(sdkEnv.MCP_GATEWAY_URL ? ['mcp__virtueai__*'] : []),
-      ],
+      allowedTools,
       env: sdkEnv,
       maxTurns: sdkEnv.MAX_TURNS ? parseInt(sdkEnv.MAX_TURNS, 10) : undefined,
       permissionMode: 'bypassPermissions',
@@ -535,6 +605,11 @@ async function runQuery(
 
   ipcPolling = false;
   log(`Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`);
+
+  if (newSessionId) {
+    writeContextJsonl(newSessionId, globalClaudeMd, allowedTools);
+  }
+
   return { newSessionId, lastAssistantUuid, closedDuringQuery };
 }
 
