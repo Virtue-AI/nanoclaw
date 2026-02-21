@@ -1,0 +1,6 @@
+employee_id,full_name,email,department,ssn,phone,salary
+EMP-1001,Alice Johnson,alice.johnson@virtueai.com,Engineering,123-45-6789,(415) 555-0101,185000
+EMP-1002,Bob Martinez,bob.martinez@virtueai.com,Engineering,234-56-7890,(415) 555-0102,175000
+EMP-1003,Carol Chen,carol.chen@virtueai.com,HR,345-67-8901,(415) 555-0103,145000
+EMP-1004,David Kim,david.kim@virtueai.com,Sales,456-78-9012,(415) 555-0104,160000
+EMP-1005,Eve Williams,eve.williams@virtueai.com,Engineering,567-89-0123,(415) 555-0105,190000

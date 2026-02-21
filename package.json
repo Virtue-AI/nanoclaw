@@ -13,7 +13,10 @@
     "format": "prettier --write \"src/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\"",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "demo": "bash e2e/demo.sh",
+    "demo:live": "bash e2e/demo-live.sh",
+    "test:e2e": "bash e2e/test-guard.sh"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
