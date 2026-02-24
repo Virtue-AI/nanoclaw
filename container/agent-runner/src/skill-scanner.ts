@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 
-export interface TopicGuardConfig {
+export interface SkillsGuardConfig {
   apiUrl: string;
   apiKey: string;
   guardUuid: string;
@@ -14,6 +14,7 @@ export interface SkillScanResult {
   flagged: boolean;
   categories: Record<string, boolean>;
   probs: Record<string, number>;
+  reasoning: string | null;
   latencyMs: number;
 }
 
@@ -23,7 +24,7 @@ export interface ScanReport {
   results: SkillScanResult[];
 }
 
-interface TopicGuardResponse {
+interface SkillsGuardResponse {
   flag: boolean;
   id: string;
   guard: string;
@@ -40,27 +41,30 @@ interface TopicGuardResponse {
   latency_ms: number;
 }
 
-const DEFAULT_API_URL = 'https://guard-policy-backend-latest.staging.virtueai.io/api/topic_guard';
+const DEFAULT_API_URL =
+  'https://guard-policy-backend-latest.staging.virtueai.io/api/topic_guard';
 const SKILLS_DIR = '/home/node/.claude/skills';
 
-export function buildTopicGuardConfig(env: Record<string, string | undefined>): TopicGuardConfig {
+export function buildSkillsGuardConfig(
+  env: Record<string, string | undefined>,
+): SkillsGuardConfig {
   return {
-    apiUrl: env.TOPIC_GUARD_API_URL || DEFAULT_API_URL,
-    apiKey: env.TOPIC_GUARD_API_KEY || '',
-    guardUuid: env.TOPIC_GUARD_UUID || '',
-    enabled: env.TOPIC_GUARD_ENABLED !== 'false',
+    apiUrl: env.SKILLS_GUARD_API_URL || DEFAULT_API_URL,
+    apiKey: env.SKILLS_GUARD_API_KEY || '',
+    guardUuid: env.SKILLS_GUARD_UUID || '',
+    enabled: env.SKILLS_GUARD_ENABLED !== 'false',
     debug: env.GUARD_DEBUG === 'true',
   };
 }
 
-function log(config: TopicGuardConfig, msg: string): void {
+function log(config: SkillsGuardConfig, msg: string): void {
   if (config.debug) console.error(`[skill-scanner] ${msg}`);
 }
 
 async function scanSkillContent(
   text: string,
-  config: TopicGuardConfig,
-): Promise<TopicGuardResponse> {
+  config: SkillsGuardConfig,
+): Promise<SkillsGuardResponse> {
   const res = await fetch(config.apiUrl, {
     method: 'POST',
     headers: {
@@ -75,25 +79,28 @@ async function scanSkillContent(
 
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(`Topic Guard API ${res.status}: ${body}`);
+    throw new Error(`Skills Guard API ${res.status}: ${body}`);
   }
 
-  return (await res.json()) as TopicGuardResponse;
+  return (await res.json()) as SkillsGuardResponse;
 }
 
 export async function scanSkillsAtSessionStart(
-  config: TopicGuardConfig,
+  config: SkillsGuardConfig,
   skillsDir: string = SKILLS_DIR,
 ): Promise<ScanReport> {
   const report: ScanReport = { scannedCount: 0, blockedCount: 0, results: [] };
 
   if (!config.enabled) {
-    log(config, 'Skill scanning disabled (TOPIC_GUARD_ENABLED=false)');
+    log(config, 'Skill scanning disabled (SKILLS_GUARD_ENABLED=false)');
     return report;
   }
 
   if (!config.apiKey || !config.guardUuid) {
-    log(config, 'Skill scanning skipped (no TOPIC_GUARD_API_KEY or TOPIC_GUARD_UUID)');
+    log(
+      config,
+      'Skill scanning skipped (no SKILLS_GUARD_API_KEY or SKILLS_GUARD_UUID)',
+    );
     return report;
   }
 
@@ -102,7 +109,7 @@ export async function scanSkillsAtSessionStart(
     return report;
   }
 
-  const entries = fs.readdirSync(skillsDir).filter(entry => {
+  const entries = fs.readdirSync(skillsDir).filter((entry) => {
     const entryPath = path.join(skillsDir, entry);
     return fs.statSync(entryPath).isDirectory();
   });
@@ -114,52 +121,64 @@ export async function scanSkillsAtSessionStart(
 
   log(config, `Scanning ${entries.length} skill(s)...`);
 
-  const scanPromises = entries.map(async (skillName): Promise<SkillScanResult | null> => {
-    const skillMdPath = path.join(skillsDir, skillName, 'SKILL.md');
-    if (!fs.existsSync(skillMdPath)) return null;
+  const scanPromises = entries.map(
+    async (skillName): Promise<SkillScanResult | null> => {
+      const skillMdPath = path.join(skillsDir, skillName, 'SKILL.md');
+      if (!fs.existsSync(skillMdPath)) return null;
 
-    const content = fs.readFileSync(skillMdPath, 'utf-8');
-    if (!content.trim()) return null;
+      const content = fs.readFileSync(skillMdPath, 'utf-8');
+      if (!content.trim()) return null;
 
-    try {
-      const response = await scanSkillContent(content, config);
-      const firstResult = response.results[0];
-      const result: SkillScanResult = {
-        name: skillName,
-        flagged: response.flag,
-        categories: firstResult?.categories ?? {},
-        probs: firstResult?.probs ?? {},
-        latencyMs: response.latency_ms,
-      };
+      try {
+        const response = await scanSkillContent(content, config);
+        const firstResult = response.results[0];
+        const result: SkillScanResult = {
+          name: skillName,
+          flagged: response.flag,
+          categories: firstResult?.categories ?? {},
+          probs: firstResult?.probs ?? {},
+          reasoning: firstResult?.reasoning ?? null,
+          latencyMs: response.latency_ms,
+        };
 
-      if (response.flag) {
-        const blockedPath = skillMdPath + '.blocked';
-        fs.renameSync(skillMdPath, blockedPath);
-        log(config, `BLOCKED skill "${skillName}" → renamed to SKILL.md.blocked`);
+        if (response.flag) {
+          const blockedPath = skillMdPath + '.blocked';
+          fs.renameSync(skillMdPath, blockedPath);
+          log(
+            config,
+            `BLOCKED skill "${skillName}" → renamed to SKILL.md.blocked`,
+          );
 
-        const triggered = Object.entries(result.categories)
-          .filter(([, v]) => v)
-          .map(([k]) => k);
-        if (triggered.length > 0) {
-          log(config, `  Triggered categories: ${triggered.join(', ')}`);
+          const triggered = Object.entries(result.categories)
+            .filter(([, v]) => v)
+            .map(([k]) => k);
+          if (triggered.length > 0) {
+            log(config, `  Triggered categories: ${triggered.join(', ')}`);
+          }
+        } else {
+          log(
+            config,
+            `OK skill "${skillName}" (${response.latency_ms.toFixed(0)}ms)`,
+          );
         }
-      } else {
-        log(config, `OK skill "${skillName}" (${response.latency_ms.toFixed(0)}ms)`);
-      }
 
-      return result;
-    } catch (err) {
-      // fail-open: API errors should not block legitimate skills
-      console.error(`[skill-scanner] Error scanning "${skillName}": ${err instanceof Error ? err.message : String(err)}`);
-      return {
-        name: skillName,
-        flagged: false,
-        categories: {},
-        probs: {},
-        latencyMs: 0,
-      };
-    }
-  });
+        return result;
+      } catch (err) {
+        // fail-open: API errors should not block legitimate skills
+        console.error(
+          `[skill-scanner] Error scanning "${skillName}": ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return {
+          name: skillName,
+          flagged: false,
+          categories: {},
+          probs: {},
+          reasoning: null,
+          latencyMs: 0,
+        };
+      }
+    },
+  );
 
   const results = await Promise.all(scanPromises);
 

@@ -17,6 +17,9 @@
     "test:watch": "vitest",
     "demo": "bash e2e/demo.sh",
     "demo:live": "bash e2e/demo-live.sh",
+    "demo:guard-off": "bash e2e/guard-toggle.sh off",
+    "demo:guard-on": "bash e2e/guard-toggle.sh on",
+    "demo:guard-status": "bash e2e/guard-toggle.sh",
     "test:e2e": "bash e2e/test-guard.sh"
   },
   "dependencies": {

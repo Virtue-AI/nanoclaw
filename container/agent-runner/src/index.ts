@@ -19,7 +19,7 @@ import path from 'path';
 import { query, HookCallback, PreCompactHookInput, PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
 import { buildGuardConfig, createGuardHook, createMcpGuardHook } from './guard.js';
-import { buildTopicGuardConfig, scanSkillsAtSessionStart } from './skill-scanner.js';
+import { buildSkillsGuardConfig, scanSkillsAtSessionStart, ScanReport } from './skill-scanner.js';
 
 interface ContainerInput {
   prompt: string;
@@ -65,6 +65,7 @@ function writeContextJsonl(
   sessionId: string,
   globalClaudeMd: string | undefined,
   allowedTools: string[],
+  scanReport?: ScanReport,
 ): void {
   try {
     const contextPath = path.join(CONTEXT_JSONL_DIR, `${sessionId}.context.jsonl`);
@@ -111,6 +112,31 @@ function writeContextJsonl(
           }));
         }
       }
+
+    // Record blocked skills so trajectory viewer shows them
+    if (scanReport && scanReport.blockedCount > 0) {
+      for (const result of scanReport.results) {
+        if (!result.flagged) continue;
+        const blockedPath = path.join(skillsDir, result.name, 'SKILL.md.blocked');
+        const content = fs.existsSync(blockedPath)
+          ? fs.readFileSync(blockedPath, 'utf-8')
+          : '(content unavailable)';
+        lines.push(JSON.stringify({
+          type: 'context',
+          subtype: 'skill_blocked',
+          name: result.name,
+          path: blockedPath,
+          content,
+          scan: {
+            categories: result.categories,
+            probs: result.probs,
+            reasoning: result.reasoning,
+            latencyMs: result.latencyMs,
+          },
+          timestamp: ts,
+        }));
+      }
+    }
     }
 
     lines.push(JSON.stringify({
@@ -484,6 +510,7 @@ async function runQuery(
   mcpServerPath: string,
   containerInput: ContainerInput,
   sdkEnv: Record<string, string | undefined>,
+  scanReport?: ScanReport,
   resumeAt?: string,
 ): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean }> {
   const stream = new MessageStream();
@@ -586,7 +613,7 @@ async function runQuery(
       newSessionId = message.session_id;
       log(`Session initialized: ${newSessionId}`);
       if (newSessionId) {
-        writeContextJsonl(newSessionId, globalClaudeMd, allowedTools);
+        writeContextJsonl(newSessionId, globalClaudeMd, allowedTools, scanReport);
       }
     }
 
@@ -645,10 +672,24 @@ async function main(): Promise<void> {
 
   try { fs.unlinkSync(IPC_INPUT_CLOSE_SENTINEL); } catch { /* ignore */ }
 
-  const topicGuardConfig = buildTopicGuardConfig(sdkEnv);
-  const scanReport = await scanSkillsAtSessionStart(topicGuardConfig);
+  const skillsGuardConfig = buildSkillsGuardConfig(sdkEnv);
+  const scanReport = await scanSkillsAtSessionStart(skillsGuardConfig);
   if (scanReport.blockedCount > 0) {
-    log(`Blocked ${scanReport.blockedCount} skill(s): ${scanReport.results.filter(r => r.flagged).map(r => r.name).join(', ')}`);
+    const blocked = scanReport.results.filter(r => r.flagged);
+    log(`Blocked ${scanReport.blockedCount} skill(s): ${blocked.map(r => r.name).join(', ')}`);
+    // Emit scan report so host can relay to WhatsApp
+    const hostBase = `data/sessions/${containerInput.groupFolder}/.claude/skills`;
+    const details = blocked.map(r => {
+      const triggered = Object.entries(r.categories)
+        .filter(([, v]) => v)
+        .map(([k]) => k);
+      const reason = r.reasoning || triggered.join(', ') || 'policy violation';
+      return `• *${r.name}*: ${reason}\n  _${hostBase}/${r.name}/SKILL.md.blocked_`;
+    }).join('\n');
+    writeOutput({
+      status: 'success',
+      result: `⚠️ *Skills Guard* blocked ${scanReport.blockedCount} skill(s):\n${details}`,
+    });
   }
 
   let prompt = containerInput.prompt;
@@ -667,7 +708,7 @@ async function main(): Promise<void> {
     while (true) {
       log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
 
-      const queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt);
+      const queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, scanReport, resumeAt);
       if (queryResult.newSessionId) {
         sessionId = queryResult.newSessionId;
       }
