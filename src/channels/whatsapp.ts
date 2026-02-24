@@ -56,6 +56,7 @@ export class WhatsAppChannel implements Channel {
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
 
     this.sock = makeWASocket({
+      version: [2, 3000, 1033916097],
       auth: {
         creds: state.creds,
         keys: makeCacheableSignalKeyStore(state.keys, logger),

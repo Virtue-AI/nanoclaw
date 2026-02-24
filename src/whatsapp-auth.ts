@@ -24,7 +24,7 @@ const QR_FILE = './store/qr-data.txt';
 const STATUS_FILE = './store/auth-status.txt';
 
 const logger = pino({
-  level: 'warn', // Quiet logging - only show errors
+  level: 'warn',
 });
 
 // Check for --pairing-code flag and phone number
@@ -54,6 +54,7 @@ async function connectSocket(phoneNumber?: string, isReconnect = false): Promise
   }
 
   const sock = makeWASocket({
+    version: [2, 3000, 1033916097],
     auth: {
       creds: state.creds,
       keys: makeCacheableSignalKeyStore(state.keys, logger),
@@ -111,6 +112,14 @@ async function connectSocket(phoneNumber?: string, isReconnect = false): Promise
         // registration completes. Reconnect to finish the handshake.
         console.log('\n⟳ Stream error (515) after pairing — reconnecting...');
         connectSocket(phoneNumber, true);
+      } else if (reason === 405) {
+        // 405 = stale WhatsApp Web version or session invalidated.
+        // Clear credentials and exit — user should update the version in makeWASocket.
+        fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+        fs.mkdirSync(AUTH_DIR, { recursive: true });
+        console.log('\n✗ Connection rejected (405). Credentials cleared.');
+        console.log('  This usually means the WhatsApp Web version is outdated.');
+        process.exit(1);
       } else {
         fs.writeFileSync(STATUS_FILE, `failed:${reason || 'unknown'}`);
         console.log('\n✗ Connection failed. Please try again.');
